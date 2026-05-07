@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.claude/
+data/cars.db
+data/raw/*.html
+data/raw/*.htm
+data/raw/*.har
+data/raw/*.json
+.DS_Store
+Thumbs.db
+
+# Personal artifacts — not for the public repo.
+george-prompts.md
