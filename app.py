@@ -11,9 +11,8 @@ import streamlit as st
 
 from cartracker import db, model
 
-st.set_page_config(page_title="Cartracker — Tacoma Price Model", layout="wide")
+st.set_page_config(page_title="Cartracker — Vehicle Price Model", layout="wide")
 
-MODEL_FILTER = "Tacoma"
 # Listing URL host built from parts so the literal name doesn't appear in
 # source. If you fork this for a different vehicle marketplace, override
 # _LISTING_HOST and _LISTING_PATH below.
@@ -36,27 +35,51 @@ def _conn():
 
 
 @st.cache_data(show_spinner=False)
-def _load(model_name: str) -> pd.DataFrame:
-    return db.load_dataframe(_conn(), model=model_name)
+def _load_all() -> pd.DataFrame:
+    return db.load_dataframe(_conn(), model=None)
 
 
 @st.cache_resource(show_spinner="Training models…")
-def _train(model_name: str, _data_version: int):
-    df = _load(model_name)
+def _train(model_filter: str, _data_version: int):
+    all_df = _load_all()
+    if model_filter == "All":
+        df = all_df
+    else:
+        df = all_df[all_df["model"] == model_filter]
     return model.train(df)
 
 
 # Sidebar -------------------------------------------------------------
 st.sidebar.title("Cartracker")
-df = _load(MODEL_FILTER)
-st.sidebar.metric("Listings in DB", len(df))
+
+all_df = _load_all()
+model_counts = all_df["model"].value_counts()
+available_models = ["All"] + model_counts.index.tolist()
+
+selected_model = st.sidebar.selectbox(
+    "Vehicle model",
+    available_models,
+    index=0,
+    help="Filter listings + train the price model on this subset.",
+    format_func=lambda m: (
+        f"All ({len(all_df)})" if m == "All"
+        else f"{m} ({int(model_counts[m])})"
+    ),
+)
+
+if selected_model == "All":
+    df = all_df
+else:
+    df = all_df[all_df["model"] == selected_model]
+
+st.sidebar.metric("Listings shown", len(df))
 if not df.empty:
     st.sidebar.write(
         f"Year range: **{int(df['year'].min())}–{int(df['year'].max())}**"
     )
     st.sidebar.write(f"Median price: **${int(df['price'].median()):,}**")
 if st.sidebar.button("Reload from DB"):
-    _load.clear()
+    _load_all.clear()
     _train.clear()
     st.rerun()
 
@@ -75,16 +98,20 @@ tab_data, tab_model, tab_score = st.tabs(["Data", "Model", "Score a listing"])
 
 
 with tab_data:
-    st.subheader(f"{MODEL_FILTER} listings")
+    label = "All vehicles" if selected_model == "All" else f"{selected_model} listings"
+    st.subheader(label)
     df_with_url = df.copy()
     df_with_url["url"] = df_with_url["stock_number"].map(_listing_url)
 
     c1, c2 = st.columns(2)
     with c1:
+        # If viewing all models, color by model — easiest visual distinction.
+        # If viewing a single model, color by trim as before.
+        color_field = "model" if selected_model == "All" else "trim"
         fig = px.scatter(
-            df_with_url, x="mileage", y="price", color="trim",
-            hover_data=["year", "vin", "drivetrain", "cab_style"],
-            custom_data=["stock_number", "vin", "year", "trim", "mileage", "price"],
+            df_with_url, x="mileage", y="price", color=color_field,
+            hover_data=["year", "model", "trim", "vin", "drivetrain", "cab_style"],
+            custom_data=["stock_number", "vin", "year", "model", "trim", "mileage", "price"],
             title="Price vs mileage — click a dot to open the listing",
         )
         event = st.plotly_chart(
@@ -97,29 +124,31 @@ with tab_data:
             stock = cd[0] if len(cd) > 0 else None
             vin = cd[1] if len(cd) > 1 else None
             year = cd[2] if len(cd) > 2 else None
-            trim = cd[3] if len(cd) > 3 else None
-            mileage = cd[4] if len(cd) > 4 else None
-            price = cd[5] if len(cd) > 5 else None
+            mdl = cd[3] if len(cd) > 3 else None
+            trim = cd[4] if len(cd) > 4 else None
+            mileage = cd[5] if len(cd) > 5 else None
+            price = cd[6] if len(cd) > 6 else None
             url = _listing_url(stock)
             if url:
                 st.markdown(
-                    f"**{year} Tacoma {trim}** — {int(mileage):,} mi · "
+                    f"**{year} {mdl} {trim}** — {int(mileage):,} mi · "
                     f"${int(price):,} · [Open listing ↗]({url})"
                 )
             else:
                 st.caption("No listing URL for this point.")
     with c2:
+        box_color = "model" if selected_model == "All" else "trim"
         fig = px.box(
-            df_with_url.sort_values("year"), x="year", y="price", color="trim",
-            title="Price by year × trim",
+            df_with_url.sort_values("year"), x="year", y="price", color=box_color,
+            title="Price by year × " + box_color,
         )
         st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(
         df_with_url[[
-            "year", "trim", "mileage", "price", "drivetrain",
+            "year", "model", "trim", "mileage", "price", "drivetrain",
             "cab_style", "exterior_color", "location", "vin", "url",
-        ]].sort_values(["year", "price"], ascending=[False, True]),
+        ]].sort_values(["model", "year", "price"], ascending=[True, False, True]),
         use_container_width=True, hide_index=True,
         column_config={
             "url": st.column_config.LinkColumn(
@@ -132,8 +161,14 @@ with tab_data:
 
 
 with tab_model:
-    bundles = _train(MODEL_FILTER, len(df))
+    bundles = _train(selected_model, len(df))
     st.subheader("Cross-validated accuracy (5-fold)")
+    if selected_model == "All":
+        st.caption(
+            "Training across **all** vehicle models. The price model uses "
+            "`model` as a categorical feature so Tacomas and Tundras get "
+            "separate base prices, but per-model accuracy is usually better."
+        )
     metrics = pd.DataFrame([
         {"model": b.name, "MAE ($)": round(b.mae), "R²": round(b.r2, 3)}
         for b in bundles.values()
@@ -157,31 +192,35 @@ with tab_model:
 
 with tab_score:
     st.subheader("Should I buy this one?")
-    bundles = _train(MODEL_FILTER, len(df))
+    bundles = _train(selected_model, len(df))
 
+    # Model selector matters when "All" is selected — the price model needs
+    # to know which vehicle model the input listing represents.
+    models_in_data = sorted(df["model"].dropna().unique().tolist())
     trims = sorted(df["trim"].dropna().unique().tolist())
     drivetrains = sorted(df["drivetrain"].dropna().unique().tolist()) or ["4WD", "RWD"]
     cabs = sorted(df["cab_style"].dropna().unique().tolist()) or ["Double Cab"]
     engines = sorted(df["engine"].dropna().unique().tolist()) or ["unknown"]
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        year = st.number_input("Year", min_value=2005, max_value=2027,
+        vehicle_model = st.selectbox("Vehicle model", models_in_data, index=0)
+        year = st.number_input("Year", min_value=2005, max_value=2028,
                                value=int(df["year"].median()))
+    with c2:
         mileage = st.number_input("Mileage", min_value=0, max_value=400000,
                                   value=int(df["mileage"].median()), step=1000)
-    with c2:
         trim = st.selectbox("Trim", trims, index=0)
-        drivetrain = st.selectbox("Drivetrain", drivetrains, index=0)
     with c3:
+        drivetrain = st.selectbox("Drivetrain", drivetrains, index=0)
         cab_style = st.selectbox("Cab style", cabs, index=0)
+    with c4:
         engine = st.selectbox("Engine", engines, index=0)
-
-    asking = st.number_input("Asking price ($)", min_value=0, max_value=200000,
-                             value=35000, step=500)
+        asking = st.number_input("Asking price ($)", min_value=0, max_value=200000,
+                                 value=35000, step=500)
 
     listing = {
-        "year": year, "mileage": mileage, "trim": trim,
+        "year": year, "mileage": mileage, "model": vehicle_model, "trim": trim,
         "drivetrain": drivetrain, "cab_style": cab_style, "engine": engine,
     }
 
@@ -212,10 +251,12 @@ with tab_score:
     else:
         st.info("Asking price is within model error of the predicted average.")
 
-    # Comparable listings.
+    # Comparable listings — always match the chosen vehicle model first,
+    # then trim if available.
     st.markdown("**Closest comps in the database**")
-    comps = df.copy()
-    comps = comps[comps["trim"] == trim] if trim in comps["trim"].values else comps
+    comps = all_df[all_df["model"] == vehicle_model].copy()
+    if trim in comps["trim"].values:
+        comps = comps[comps["trim"] == trim]
     comps["score"] = (
         (comps["year"] - year).abs() * 800
         + (comps["mileage"] - mileage).abs() * 0.10
@@ -223,7 +264,7 @@ with tab_score:
     comps["url"] = comps["stock_number"].map(_listing_url)
     st.dataframe(
         comps.nsmallest(10, "score")[[
-            "year", "trim", "mileage", "price", "drivetrain",
+            "year", "model", "trim", "mileage", "price", "drivetrain",
             "cab_style", "location", "vin", "url",
         ]],
         hide_index=True, use_container_width=True,

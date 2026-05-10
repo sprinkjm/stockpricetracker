@@ -20,7 +20,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 NUMERIC_FEATURES = ["year", "mileage"]
-CATEGORICAL_FEATURES = ["trim", "drivetrain", "cab_style", "engine"]
+CATEGORICAL_FEATURES = ["model", "trim", "drivetrain", "cab_style", "engine"]
 TARGET = "price"
 
 
