@@ -102,14 +102,51 @@ with tab_data:
     st.subheader(label)
     df_with_url = df.copy()
     df_with_url["url"] = df_with_url["stock_number"].map(_listing_url)
+    color_field = "model" if selected_model == "All" else "trim"
+
+    # Read any selection the user made on the right-hand box plot last
+    # rerun. We use that to filter the left-hand scatter.
+    box_state = st.session_state.get("box_filter")
+    box_points = (box_state.get("selection") or {}).get("points") if box_state else []
+
+    filter_year = None
+    filter_color = None
+    if box_points:
+        pt = box_points[0]
+        if "x" in pt and pt["x"] is not None:
+            try:
+                filter_year = int(round(float(pt["x"])))
+            except (TypeError, ValueError):
+                filter_year = None
+        cd = pt.get("customdata") or []
+        if cd:
+            filter_color = cd[0]
+
+    scatter_df = df_with_url.copy()
+    if filter_year is not None:
+        scatter_df = scatter_df[scatter_df["year"] == filter_year]
+    if filter_color is not None:
+        scatter_df = scatter_df[scatter_df[color_field] == filter_color]
+
+    if filter_year is not None or filter_color is not None:
+        parts = []
+        if filter_year is not None:
+            parts.append(f"year={filter_year}")
+        if filter_color is not None:
+            parts.append(f"{color_field}={filter_color}")
+        bcol1, bcol2 = st.columns([5, 1])
+        bcol1.info(
+            f"Scatter filtered to {', '.join(parts)} — "
+            f"{len(scatter_df)} listing(s). Click another box to change."
+        )
+        if bcol2.button("Clear filter", use_container_width=True):
+            st.session_state.pop("box_filter", None)
+            st.rerun()
 
     c1, c2 = st.columns(2)
     with c1:
-        # If viewing all models, color by model — easiest visual distinction.
-        # If viewing a single model, color by trim as before.
-        color_field = "model" if selected_model == "All" else "trim"
         fig = px.scatter(
-            df_with_url, x="mileage", y="price", color=color_field,
+            scatter_df, x="mileage", y="price", color=color_field,
             hover_data=["year", "model", "trim", "vin", "drivetrain", "cab_style"],
             custom_data=["stock_number", "vin", "year", "model", "trim", "mileage", "price"],
             title="Price vs mileage — click a dot to open the listing",
@@ -137,12 +174,20 @@ with tab_data:
             else:
                 st.caption("No listing URL for this point.")
     with c2:
-        box_color = "model" if selected_model == "All" else "trim"
+        box_color = color_field
         fig = px.box(
             df_with_url.sort_values("year"), x="year", y="price", color=box_color,
-            title="Price by year × " + box_color,
+            custom_data=[box_color],
+            points="all",
+            title=f"Price by year × {box_color} — click any dot to filter the scatter",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        # Make the dots visible enough to invite a click.
+        fig.update_traces(marker=dict(size=6, opacity=0.7))
+        st.plotly_chart(
+            fig, use_container_width=True,
+            on_select="rerun", key="box_filter",
+            selection_mode=("points", "box", "lasso"),
+        )
 
     st.dataframe(
         df_with_url[[
